@@ -1,0 +1,141 @@
+---
+title: "Detectando Atividades Fraudulentas"
+author: "Data Science Academy"
+date: "03 de Agosto, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# 1. Definição do Problema
+
+Os sites de comércio eletrônico lidam com um alto risco de usuários realizarem atividades fraudulentas. A Aprendizagem de Máquina realmente se destaca na identificação de atividades fraudulentas e no combate a esta ação criminosa. O objetivo deste projeto é construir um modelo de aprendizado de máquina que seja capaz de prever a probabilidade de que a primeira transação de um novo usuário seja fraudulenta. Os dados utilizados são fictícios, mas representam o acesso de usuários a um site de comércio eletrônico. Embora não contemplado aqui, recomendamos que você explore os dados antes de construir o modelo. Utilize tudo que você aprendeu no curso.
+
+a) Carrega os pacotes
+```{r}
+library(dplyr)
+library(randomForest)
+library(ROCR)
+```
+
+b) Carrega os datasets
+```{r}
+data = read.csv("Fraud_Data.csv")
+ip_addresses = read.csv("IpAddress_to_Country.csv")
+```
+
+
+# 2. Processa os Dados
+
+Verifica a existência de duplicatas
+```{r}
+nrow(data) == length(unique(data$user_id))
+```
+Adiciona país ao conjunto de dados original com base em endereços IP
+```{r}
+data_country = rep(NA, nrow(data))
+for (i in 1: nrow(data)){
+tmp = as.character(ip_addresses [data$ip_address[i] >= ip_addresses$lower_bound_ip_address & data$ip_address[i] <= ip_addresses$upper_bound_ip_address,"country"])
+if (length(tmp) == 1) {data_country[i] = tmp}
+}
+data$country = data_country
+data[, "signup_time"] = as.POSIXct(data[, "signup_time"], tz="GMT")
+data[, "purchase_time"] = as.POSIXct(data[, "purchase_time"], tz="GMT")
+summary(as.factor(data$country))
+```
+
+# 3 Feature Engineering
+
+Algumas variáveis óbvias que podem ser criadas aqui podem ser:
+
+1. Diferença de horário entre o horário de inscrição e o tempo de compra
+2. Se o ID do dispositivo é exclusivo ou certos usuários compartilhem o mesmo dispositivo (muitos ID de usuário diferentes usando o mesmo dispositivo podem ser um indicador de contas falsas).
+3. Muitos usuários diferentes que tenham o mesmo endereço IP podem ser um indicador de
+contas falsas.
+4. Semana usual do ano e dia da semana a partir de variáveis de tempo.
+
+Calcula a diferença de horário entre compra e inscrição
+```{r}
+data$purchase_signup_diff = as.numeric(difftime(as.POSIXct(data$purchase_time, tz="GMT"), as.POSIXct(data$signup_time, tz="GMT"), unit="secs"))
+
+```
+
+Verifica para cada identificação de cada dispositivo id / endereço IP quantos usuários diferentes estão usando o mesmo endereço
+```{r}
+
+data <- data %>%
+  group_by(device_id) %>%
+  mutate (device_id_count = n())
+
+data <- data %>%
+  group_by(ip_address) %>% 
+  mutate (ip_address_count = n())
+
+```
+
+Dia da semana e semana do ano
+```{r}
+data$signup_time_wd = format(data$signup_time, "%A")
+data$purchase_time_wd = format(data$purchase_time, "%A" )
+data$signup_time_wy = as.numeric(format(data$signup_time, "%U"))
+data$purchase_time_wy = as.numeric(format(data$purchase_time, "%U" ))
+
+```
+
+Descarta variáveis indesejadas do conjunto de dados
+```{r}
+data_rf = data[, -c(1:3, 5)]
+```
+
+Mantém os 50 melhores países e tudo mais é "outro"
+```{r}
+
+data_rf$country[is.na(data_rf$country)]="Not_found"
+data_rf$country = ifelse(data_rf$country %in% names(sort(table(data_rf$country),decreasing = TRUE))[51:length(unique(data_rf$country))],"Other", as.character(data_rf$country))
+
+```
+
+Variáveis necessárias do processo
+```{r}
+# Transforma a classe em fator
+data_rf$class = as.factor(data_rf$class)
+
+# Todas as variáveis do tipo character se tornam fator
+data_rf[sapply(data_rf, is.character)] <- lapply(data_rf[sapply(data_rf, is.character)], as.factor)
+
+```
+
+# 4. Separa dados de treino e de teste
+
+O modelo será ajustado usando 2/3 de dados como treino e 1/3 restante dos dados como conjunto de dados de teste.
+```{r}
+train_sample = sample(nrow(data_rf), size = nrow(data)*0.66)
+train_data = data_rf[train_sample,]
+test_data = data_rf[-train_sample,]
+```
+
+Para o problema dado, escolhemos o método RandomForest para as previsões. As florestas aleatórias geralmente exigem muito pouco tempo para otimizar (seus parâmetros padrões são frequentemente próximos dos melhores) e são robustos com variáveis abertas, variáveis irrelevantes, contínuas e discretas. Além disso, eles fornecem parcelas de dependência parcial e importância de variável para obter informações sobre como a informação é derivada das variáveis. O método da floresta aleatória é conhecido por ser flexível e tem variância relativamente menor do que uma árvore individual.
+```{r}
+rf = randomForest(y=train_data$class, x = train_data[, -7],ytest = test_data$class, 
+                  xtest = test_data[, -7],ntree = 50, mtry = 3, keep.forest = TRUE)
+print(rf)
+```
+
+
+```{r}
+# Vamos combinar em um modelo de conjunto de dados previsões e valores reais.
+# A primeira coluna são as classes reais em nosso conjunto de teste e a segunda são as pontuações previstas
+rf_results = data.frame (true_values = test_data$class,predictions = rf$test$votes[,2])
+pred = prediction (rf_results$predictions, rf_results$true_values)
+
+# Plot ROC mostrando verdadeiro positivo versus falso positivo
+perf = performance (pred, measure = 'tpr', x.measure = "fpr")
+plot(perf) + abline(a=0, b=1, col = 'red')
+```
+
+# 5. Conclusão
+
+O modelo produz a probabilidade de um novo usuário cometer fraude e uma probabilidade de corte adequada deve ser selecionada para classificar um usuário específico como fraude. Por exemplo, o método padrão de floresta aleatória usa 0,5 como ponto de corte. Se a prioridade é minimizar os falsos positivos, um ponto de corte de aproximadamente 0.5 e taxa de falso positivo próximo de zero devem ser escolhidos . No entanto, se nos preocupamos em maximizar o verdadeiro positivo, teremos que diminuir o corte. Desta forma, classificaremos mais eventos como "1": alguns serão verdadeiros (então, o verdadeiro positivo aumenta) e muitos, infelizmente, serão falsos (então, falso positivo também vai subir).
